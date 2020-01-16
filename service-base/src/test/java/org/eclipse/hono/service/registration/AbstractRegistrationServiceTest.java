@@ -183,20 +183,23 @@ public abstract class AbstractRegistrationServiceTest {
      */
     @Test
     public void testGetSucceedsForRegisteredDeviceWithData(final VertxTestContext ctx) {
-        final Map<String, Device> devices = new HashMap<>();
 
         final List<String> vias = Collections.unmodifiableList(Arrays.asList("a", "b", "c"));
+        final List<String> viaGroups = Collections.unmodifiableList(Arrays.asList("group1", "group2"));
         final String deviceId = UUID.randomUUID().toString();
         final Device device = new Device();
         device.setVia(vias);
+        device.setViaGroups(viaGroups);
 
-        final Device gateway = new Device();
+        final Promise<OperationResult<Id>> addResult = Promise.promise();
 
-        devices.put(deviceId, device);
-        devices.put("b", gateway);
-        devices.put("c", gateway);
+        getDeviceManagementService()
+                .createDevice(TENANT, Optional.of(deviceId), device, NoopSpan.INSTANCE, addResult);
 
-        createDevices(devices)
+        addResult.future()
+                .map(r -> ctx.verify(() -> {
+                    assertEquals(HttpURLConnection.HTTP_CREATED, r.getStatus());
+                }))
                 .compose(ok -> {
                     final Promise<OperationResult<Device>> getResult = Promise.promise();
                     getDeviceManagementService().readDevice(TENANT, deviceId, NoopSpan.INSTANCE, getResult);
@@ -207,7 +210,10 @@ public abstract class AbstractRegistrationServiceTest {
 
                     assertNotNull(s.getPayload());
                     assertEquals(vias, s.getPayload().getVia());
+                    assertEquals(viaGroups, s.getPayload().getViaGroups());
 
+                    ctx.completeNow();
+                    /*
                     getRegistrationService().assertRegistration(TENANT, deviceId, ctx.succeeding(s2 -> {
                         assertEquals(HttpURLConnection.HTTP_OK, s2.getStatus());
                         assertNotNull(s2.getPayload());
@@ -215,18 +221,21 @@ public abstract class AbstractRegistrationServiceTest {
                         // assert "via"
                         final JsonArray viaJson = s2.getPayload().getJsonArray("via");
                         assertNotNull(viaJson);
-                        assertEquals(viaJson, new JsonArray().add("b").add("c"));
+                        assertEquals(vias, viaJson.stream().map(Object::toString).collect(Collectors.toList()));
 
                         ctx.completeNow();
                     }));
+                    */
+
 
                 })));
     }
 
     /**
-     * Verifies that the registry returns 200 when getting an existing device.
+     * Verifies that the registry returns 200 when getting an existing device for an assertion.
      * Further the test verifies, that the assertion resolves gateways groups to the device ids of
      * the devices that are member of the respective group.
+     * Further, the test verifies that registered devices are contained in the response of the assertion.
      *
      * @param ctx The vert.x test context.
      */
@@ -235,7 +244,7 @@ public abstract class AbstractRegistrationServiceTest {
         final Map<String, Device> devices = new HashMap<>();
         final String gatewayId = "b";
 
-        final List<String> vias = Collections.unmodifiableList(Arrays.asList("a", "b", "c", "group-1"));
+        final List<String> vias = Collections.unmodifiableList(Arrays.asList("a", "b", "c"));
         final String deviceId = UUID.randomUUID().toString();
         final Device device = new Device();
         device.setVia(vias);
@@ -264,7 +273,7 @@ public abstract class AbstractRegistrationServiceTest {
                         // assert "via"
                         final JsonArray viaJson = s2.getPayload().getJsonArray("via");
                         assertNotNull(viaJson);
-                        assertEquals(new JsonArray().add("b").add("c"), viaJson);
+                        assertEquals(new JsonArray().add("a").add("b").add("c"), viaJson);
 
                         ctx.completeNow();
                     }));
@@ -277,18 +286,22 @@ public abstract class AbstractRegistrationServiceTest {
      * Verifies that the registry returns 200 when getting an existing device.
      * Further the test verifies, that the assertion resolves gateways groups to the device ids of
      * the devices that are member of the respective group.
+     * Further the test verifies that the assertion is successful for a gateway that is mentioned in the 'via' property
+     * of the device.
      *
      * @param ctx The vert.x test context.
      */
     @Test
-    public void testAssertDeviceWithRegisteredGatewayGroup(final VertxTestContext ctx) {
+    public void testAssertDeviceWithRegisteredGatewayAndGatewayGroup(final VertxTestContext ctx) {
         final Map<String, Device> devices = new HashMap<>();
         final String gatewayId = "b";
 
-        final List<String> vias = Collections.unmodifiableList(Arrays.asList("a", "b", "group-1"));
+        final List<String> vias = Collections.unmodifiableList(Arrays.asList("a", "b"));
+        final List<String> viaGroups = Collections.unmodifiableList(Arrays.asList("group1"));
         final String deviceId = UUID.randomUUID().toString();
         final Device device = new Device();
         device.setVia(vias);
+        device.setViaGroups(viaGroups);
         devices.put(deviceId, device);
 
         final Device gatewayA = new Device();
@@ -296,14 +309,14 @@ public abstract class AbstractRegistrationServiceTest {
 
         final Device gatewayB = new Device();
         final List<String> memberOfB = new ArrayList<>();
-        memberOfB.add("group-1");
+        memberOfB.add("group1");
         gatewayB.setMemberOf(memberOfB);
         devices.put("b", gatewayB);
 
         final Device gatewayC = new Device();
         final List<String> memberOfC = new ArrayList<>();
-        memberOfC.add("group-1");
-        memberOfC.add("group-2");
+        memberOfC.add("group1");
+        memberOfC.add("group2");
         gatewayC.setMemberOf(memberOfC);
         devices.put("c", gatewayC);
 
@@ -338,18 +351,22 @@ public abstract class AbstractRegistrationServiceTest {
      * Verifies that the registry returns 200 when getting an existing device.
      * Further the test verifies, that the assertion resolves gateways groups to the device ids of
      * the devices that are member of the respective group.
+     * Further the test verifies that the assertion is successful for a gateway that is not mentioned in the 'via' property
+     * of the device but part of a group mentioned in the 'viaGroups' property.
      *
      * @param ctx The vert.x test context.
      */
     @Test
-    public void testAssertDeviceWithNonRegisteredGatewayGroup(final VertxTestContext ctx) {
+    public void testAssertDeviceWithRegisteredGatewayGroupGateway(final VertxTestContext ctx) {
         final Map<String, Device> devices = new HashMap<>();
-        final String gatewayId = "d";
+        final String gatewayId = "c";
 
-        final List<String> vias = Collections.unmodifiableList(Arrays.asList("a", "b", "group-1"));
+        final List<String> vias = Collections.unmodifiableList(Arrays.asList("a"));
+        final List<String> viaGroups = Collections.unmodifiableList(Arrays.asList("group1"));
         final String deviceId = UUID.randomUUID().toString();
         final Device device = new Device();
         device.setVia(vias);
+        device.setViaGroups(viaGroups);
         devices.put(deviceId, device);
 
         final Device gatewayA = new Device();
@@ -357,14 +374,76 @@ public abstract class AbstractRegistrationServiceTest {
 
         final Device gatewayB = new Device();
         final List<String> memberOfB = new ArrayList<>();
-        memberOfB.add("group-1");
+        memberOfB.add("group1");
         gatewayB.setMemberOf(memberOfB);
         devices.put("b", gatewayB);
 
         final Device gatewayC = new Device();
         final List<String> memberOfC = new ArrayList<>();
-        memberOfC.add("group-1");
-        memberOfC.add("group-2");
+        memberOfC.add("group1");
+        memberOfC.add("group2");
+        gatewayC.setMemberOf(memberOfC);
+        devices.put("c", gatewayC);
+
+        createDevices(devices)
+                .compose(ok -> {
+                    final Promise<OperationResult<Device>> getResult = Promise.promise();
+                    getDeviceManagementService().readDevice(TENANT, deviceId, NoopSpan.INSTANCE, getResult);
+                    return getResult.future();
+                })
+                .setHandler(ctx.succeeding(s -> ctx.verify(() -> {
+                    assertEquals(HttpURLConnection.HTTP_OK, s.getStatus());
+
+                    assertNotNull(s.getPayload());
+                    assertEquals(vias, s.getPayload().getVia());
+
+                    getRegistrationService().assertRegistration(TENANT, deviceId, gatewayId, ctx.succeeding(s2 -> {
+                        assertEquals(HttpURLConnection.HTTP_OK, s2.getStatus());
+                        assertNotNull(s2.getPayload());
+
+                        // assert "via"
+                        final JsonArray viaJson = s2.getPayload().getJsonArray("via");
+                        assertNotNull(viaJson);
+                        assertEquals(new JsonArray().add("a").add("b").add("c"), viaJson);
+
+                        ctx.completeNow();
+                    }));
+
+                })));
+    }
+
+    /**
+     * Verifies that the registry returns 200 when getting an existing device.
+     * Further the test verifies that the assertion returns FORBIDDEN when the gateway is not registered for the device.
+     *
+     * @param ctx The vert.x test context.
+     */
+    @Test
+    public void testAssertDeviceWithNonRegisteredGatewayGroup(final VertxTestContext ctx) {
+        final Map<String, Device> devices = new HashMap<>();
+        final String gatewayId = "b";
+
+        final List<String> vias = Collections.unmodifiableList(Arrays.asList("a"));
+        final List<String> viaGroups = Collections.unmodifiableList(Arrays.asList("group1"));
+        final String deviceId = UUID.randomUUID().toString();
+        final Device device = new Device();
+        device.setVia(vias);
+        device.setViaGroups(viaGroups);
+        devices.put(deviceId, device);
+
+        final Device gatewayA = new Device();
+        devices.put("a", gatewayA);
+
+        final Device gatewayB = new Device();
+        final List<String> memberOfB = new ArrayList<>();
+        memberOfB.add("group2");
+        gatewayB.setMemberOf(memberOfB);
+        devices.put("b", gatewayB);
+
+        final Device gatewayC = new Device();
+        final List<String> memberOfC = new ArrayList<>();
+        memberOfC.add("group1");
+        memberOfC.add("group2");
         gatewayC.setMemberOf(memberOfC);
         devices.put("c", gatewayC);
 

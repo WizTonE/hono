@@ -13,6 +13,9 @@
 package org.eclipse.hono.deviceregistry;
 
 import java.net.HttpURLConnection;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
@@ -20,6 +23,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.eclipse.hono.service.management.Id;
 import org.eclipse.hono.service.management.OperationResult;
@@ -96,8 +100,8 @@ public class FileBasedRegistrationService extends AbstractVerticle
         }
 
         @Override
-        public void resolveGroupMembers(final String tenantId, final JsonArray via, final Span span, final Handler<AsyncResult<JsonArray>> resultHandler) {
-            FileBasedRegistrationService.this.resolveGroupMembers(tenantId, via, resultHandler);
+        public void resolveGroupMembers(final String tenantId, final JsonArray viaGroups, final Span span, final Handler<AsyncResult<JsonArray>> resultHandler) {
+            FileBasedRegistrationService.this.resolveGroupMembers(tenantId, viaGroups, resultHandler);
         }
     };
 
@@ -336,40 +340,18 @@ public class FileBasedRegistrationService extends AbstractVerticle
         resultHandler.handle(Future.succeededFuture(convertResult(deviceId, readDevice(tenantId, deviceId, NoopSpan.INSTANCE))));
     }
 
-    private void resolveGroupMembers(final String tenantId, final JsonArray via, final Handler<AsyncResult<JsonArray>> resultHandler) {
+    private void resolveGroupMembers(final String tenantId, final JsonArray viaGroups, final Handler<AsyncResult<JsonArray>> resultHandler) {
         Objects.requireNonNull(tenantId);
-        Objects.requireNonNull(via);
+        Objects.requireNonNull(viaGroups);
         Objects.requireNonNull(resultHandler);
 
-        final JsonArray gateways = new JsonArray();
-        final JsonArray groups = new JsonArray();
         final Map<String, Versioned<Device>> devices = getDevicesForTenant(tenantId);
+        final List<String> gatewaySet = devices.entrySet().stream()
+                .filter(entry -> entry.getValue().getValue().getMemberOf().stream().anyMatch(group -> viaGroups.contains(group)))
+                .map(Entry::getKey)
+                .collect(Collectors.toCollection(ArrayList::new));
 
-        //filter all groups (which are not a device)
-        for (Object item : via) {
-            if (item instanceof String) {
-                if (devices.keySet().contains(item)) {
-                    gateways.add(item);
-                } else {
-                    groups.add(item);
-                }
-            } else {
-                gateways.add(item);
-            }
-        }
-
-        //find all devices whose group membership matches one of the groups in the 'via' property
-        for (Map.Entry<String, Versioned<Device>> deviceEntry : devices.entrySet()) {
-            final Device device = deviceEntry.getValue().getValue();
-            final String deviceId = deviceEntry.getKey();
-            for (Object group : groups) {
-                if (!gateways.contains(deviceId) && device.getMemberOf().contains(group)) {
-                    gateways.add(deviceId);
-                }
-            }
-        }
-
-        resultHandler.handle(Future.succeededFuture(gateways));
+        resultHandler.handle(Future.succeededFuture(new JsonArray(gatewaySet)));
     }
 
     private RegistrationResult convertResult(final String deviceId, final OperationResult<Device> result) {

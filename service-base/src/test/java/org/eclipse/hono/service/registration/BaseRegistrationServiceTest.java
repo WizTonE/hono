@@ -382,8 +382,8 @@ public class BaseRegistrationServiceTest {
             }
 
             @Override
-            protected void resolveGroupMembers(final String tenantId, final JsonArray via, final Span span, final Handler<AsyncResult<JsonArray>> resultHandler) {
-                resolveGatewayGroups.apply(via).setHandler(resultHandler);
+            protected void resolveGroupMembers(final String tenantId, final JsonArray viaGroups, final Span span, final Handler<AsyncResult<JsonArray>> resultHandler) {
+                resolveGatewayGroups.apply(viaGroups).setHandler(resultHandler);
             }
 
 
@@ -407,7 +407,7 @@ public class BaseRegistrationServiceTest {
             }
 
             @Override
-            protected void resolveGroupMembers(final String tenantId, final JsonArray via, final Span span, final Handler<AsyncResult<JsonArray>> resultHandler) {
+            protected void resolveGroupMembers(final String tenantId, final JsonArray viaGroups, final Span span, final Handler<AsyncResult<JsonArray>> resultHandler) {
                 resultHandler.handle(
                         Future.succeededFuture(new JsonArray())
                 );
@@ -469,7 +469,7 @@ public class BaseRegistrationServiceTest {
                             .put(RegistrationConstants.FIELD_ENABLED, true)
                             .put(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS, new JsonObject()
                                     .put(MessageHelper.SYS_PROPERTY_CONTENT_TYPE, "application/default"))
-                            .put(RegistrationConstants.FIELD_VIA, "group-1"));
+                            .put(RegistrationConstants.FIELD_VIA_GROUPS, "group-1"));
             return Future.succeededFuture(RegistrationResult.from(HttpURLConnection.HTTP_OK, responsePayload));
         } else if ("4716".equals(deviceId)) {
             final JsonObject responsePayload = getResultPayload(
@@ -510,7 +510,7 @@ public class BaseRegistrationServiceTest {
                     "gw-6",
                     new JsonObject()
                             .put(RegistrationConstants.FIELD_ENABLED, true)
-                            .put(RegistrationConstants.FIELD_MEMBER_OF, new JsonArray().add("group-1").add(("group-2"))));
+                            .put(RegistrationConstants.FIELD_MEMBER_OF, new JsonArray().add("group-1").add("group-2")));
             return Future.succeededFuture(RegistrationResult.from(HttpURLConnection.HTTP_OK, responsePayload));
         } else {
             return Future.succeededFuture(RegistrationResult.from(HttpURLConnection.HTTP_NOT_FOUND));
@@ -521,11 +521,7 @@ public class BaseRegistrationServiceTest {
         if (new JsonArray().add("group-1").equals(via)) {
             return Future.succeededFuture(new JsonArray().add("gw-5").add("gw-6"));
         } else {
-            return Future.succeededFuture(via);
+            return Future.succeededFuture(new JsonArray());
         }
-
-
-
-
     }
 }

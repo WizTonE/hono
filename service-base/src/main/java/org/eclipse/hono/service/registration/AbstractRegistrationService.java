@@ -14,7 +14,6 @@
 package org.eclipse.hono.service.registration;
 
 import java.net.HttpURLConnection;
-import java.util.Collections;
 import java.util.Objects;
 
 import org.eclipse.hono.tracing.TracingHelper;
@@ -78,11 +77,11 @@ public abstract class AbstractRegistrationService implements RegistrationService
 
 
     /**
-     * Takes the via list of a device and resolve all occurrences of a group id with the ids of the devices that are
-     * a member of that group.
+     * Takes the 'viaGroups' list of a device and resolve all group ids with the ids of the devices that are
+     * a member of those groups.
      *
      * @param tenantId The tenant the device belongs to.
-     * @param via The via list of a device. This list may contain the ids of devices and groups.
+     * @param viaGroups The viaGroups list of a device. This list contains the ids of groups.
      * @param span The active OpenTracing span for this operation. It is not to be closed in this method! An
      *            implementation should log (error) events on this span and it may set tags and use this span as the
      *            parent for any spans created in this method.
@@ -92,7 +91,7 @@ public abstract class AbstractRegistrationService implements RegistrationService
      */
     protected abstract void resolveGroupMembers(
             String tenantId,
-            JsonArray via,
+            JsonArray viaGroups,
             Span span,
             Handler<AsyncResult<JsonArray>> resultHandler);
 
@@ -132,7 +131,7 @@ public abstract class AbstractRegistrationService implements RegistrationService
         .compose(result -> {
             if (isDeviceEnabled(result)) {
                 final JsonObject deviceData = result.getPayload().getJsonObject(RegistrationConstants.FIELD_DATA);
-                return Future.succeededFuture(createSuccessfulRegistrationResult(tenantId, deviceId, deviceData));
+                return createSuccessfulRegistrationResult(tenantId, deviceId, deviceData, span);
             } else {
                 TracingHelper.logError(span, "device not enabled");
                 return Future.succeededFuture(RegistrationResult.from(HttpURLConnection.HTTP_NOT_FOUND));
@@ -203,7 +202,7 @@ public abstract class AbstractRegistrationService implements RegistrationService
                 }
 
                 if (isGatewayAuthorized(gatewayId, gatewayData, deviceId, deviceData)) {
-                    return Future.succeededFuture(createSuccessfulRegistrationResult(tenantId, deviceId, deviceData));
+                    return createSuccessfulRegistrationResult(tenantId, deviceId, deviceData, span);
                 } else {
                     log.debug("gateway not authorized");
                     TracingHelper.logError(span, "gateway not authorized");
@@ -231,32 +230,16 @@ public abstract class AbstractRegistrationService implements RegistrationService
      */
     protected boolean isGatewayAuthorized(final String gatewayId, final JsonObject gatewayData,
             final String deviceId, final JsonObject deviceData) {
-
         Objects.requireNonNull(gatewayId);
         Objects.requireNonNull(gatewayData);
         Objects.requireNonNull(deviceId);
         Objects.requireNonNull(deviceData);
 
-        final Object via = deviceData.getValue(RegistrationConstants.FIELD_VIA);
-        final Object memberOf = gatewayData.getValue(RegistrationConstants.FIELD_MEMBER_OF);
+        final JsonArray via = convertObjectToJsonArray(deviceData.getValue(RegistrationConstants.FIELD_VIA));
+        final JsonArray viaGroups = convertObjectToJsonArray(deviceData.getValue(RegistrationConstants.FIELD_VIA_GROUPS));
+        final JsonArray gatewayDataMemberOf = convertObjectToJsonArray(gatewayData.getValue(RegistrationConstants.FIELD_MEMBER_OF));
 
-        if (via instanceof JsonArray && memberOf instanceof JsonArray) {
-            return isGatewayInVia(gatewayId, (JsonArray) via) ||
-                    isGatewayGroupInVia((JsonArray) memberOf, (JsonArray) via);
-        } else if (via instanceof String && memberOf instanceof JsonArray) {
-            return gatewayId.equals(via) || ((JsonArray) memberOf).contains(via);
-        } else if (via instanceof JsonArray && memberOf instanceof String) {
-            return isGatewayInVia(gatewayId, (JsonArray) via) || isGatewayGroupInVia((String) memberOf, (JsonArray) via);
-        } else if (via instanceof String && memberOf instanceof String) {
-            return gatewayId.equals(via) || memberOf.equals(via);
-        } else if (via instanceof JsonArray && memberOf == null) {
-            return isGatewayInVia(gatewayId, (JsonArray) via);
-        } else if (via instanceof String && memberOf == null) {
-            return gatewayId.equals(via);
-        } else {
-            // wrong type -> not authorized
-            return false;
-        }
+        return isGatewayInVia(gatewayId, via) || anyGatewayGroupInViaGroups(gatewayDataMemberOf, viaGroups);
     }
 
     private boolean isGatewayInVia(final String gatewayId, final JsonArray via) {
@@ -266,30 +249,38 @@ public abstract class AbstractRegistrationService implements RegistrationService
                 .anyMatch(gatewayId::equals);
     }
 
-    private boolean isGatewayGroupInVia(final JsonArray gatewayMemberOf, final JsonArray via) {
-        return via
+    private boolean anyGatewayGroupInViaGroups(final JsonArray gatewayDataMemberOf, final JsonArray viaGroups) {
+        return viaGroups
                 .stream()
                 .filter(String.class::isInstance)
-                .anyMatch(gatewayMemberOf::contains);
+                .anyMatch(gatewayDataMemberOf::contains);
     }
 
-    private boolean isGatewayGroupInVia(final String gatewayMemberOf, final JsonArray via) {
-        return via
-                .stream()
-                .filter(String.class::isInstance)
-                .anyMatch(gatewayMemberOf::equals);
+    private JsonArray convertObjectToJsonArray(final Object object) {
+        final JsonArray array;
+        if (object instanceof JsonArray) {
+            array = (JsonArray) object;
+        } else {
+            array = new JsonArray();
+            if (object instanceof String) {
+                array.add((String) object);
+            }
+        }
+        return array;
     }
 
-    private RegistrationResult createSuccessfulRegistrationResult(
+    private Future<RegistrationResult> createSuccessfulRegistrationResult(
             final String tenantId,
             final String deviceId,
-            final JsonObject deviceData) {
-
-        return RegistrationResult.from(
+            final JsonObject deviceData,
+            final Span span) {
+        return getAssertionPayload(tenantId, deviceId, deviceData, span)
+                .compose(payload -> Future.succeededFuture(RegistrationResult.from(
                 HttpURLConnection.HTTP_OK,
-                getAssertionPayload(tenantId, deviceId, deviceData),
-                getRegistrationAssertionCacheDirective(deviceId, tenantId));
+                payload,
+                getRegistrationAssertionCacheDirective(deviceId, tenantId))));
     }
+
 
     /**
      * Creates the payload of the assert Registration response message.
@@ -300,28 +291,62 @@ public abstract class AbstractRegistrationService implements RegistrationService
      * 
      * @param tenantId The tenant the device belongs to.
      * @param deviceId The device to create the assertion token for.
-     * @param registrationInfo The device's registration information.
-     * @return The payload.
+     * @param registrationInfo The device registration information.
+     * @return A Future to the payload.
      */
-    protected final JsonObject getAssertionPayload(final String tenantId, final String deviceId,
+    protected final Future<JsonObject> getAssertionPayload(final String tenantId, final String deviceId,
             final JsonObject registrationInfo) {
-
-        final JsonObject result = new JsonObject()
-                .put(RegistrationConstants.FIELD_PAYLOAD_DEVICE_ID, deviceId);
-        final JsonArray viaObj = getSupportedGatewaysForDevice(tenantId, deviceId, registrationInfo);
-        if (!viaObj.isEmpty()) {
-            result.put(RegistrationConstants.FIELD_VIA, viaObj);
-        }
-        final JsonObject defaults = registrationInfo.getJsonObject(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS);
-        if (defaults != null) {
-            result.put(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS, defaults);
-        }
-        return result;
+        return getSupportedGatewaysForDevice(tenantId, deviceId, registrationInfo, NoopSpan.INSTANCE)
+                .compose(via -> {
+            final JsonObject result = new JsonObject()
+                    .put(RegistrationConstants.FIELD_PAYLOAD_DEVICE_ID, deviceId);
+            if (!via.isEmpty()) {
+                result.put(RegistrationConstants.FIELD_VIA, via);
+            }
+            final JsonObject defaults = registrationInfo.getJsonObject(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS);
+            if (defaults != null) {
+                result.put(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS, defaults);
+            }
+            return Future.succeededFuture(result);
+        });
     }
 
     /**
-     * Checks if a gateway may act on behalf of the given device. This is determined by checking whether the
-     * {@link RegistrationConstants#FIELD_VIA} property of the device registration data has one or more entries.
+     * Creates the payload of the assert Registration response message.
+     * <p>
+     * The returned JSON object may contain the {@link RegistrationConstants#FIELD_VIA} property of the device's
+     * registration information and may also contain <em>default</em> values registered for the device under key
+     * {@link RegistrationConstants#FIELD_PAYLOAD_DEFAULTS}.
+     *
+     * @param tenantId The tenant the device belongs to.
+     * @param deviceId The device to create the assertion token for.
+     * @param registrationInfo The device registration information.
+     * @param span The active OpenTracing span for this operation. It is not to be closed in this method! An
+     *            implementation should log (error) events on this span and it may set tags and use this span as the
+     *            parent for any spans created in this method.
+     * @return A Future to the payload.
+     */
+    protected final Future<JsonObject> getAssertionPayload(final String tenantId, final String deviceId,
+                                                           final JsonObject registrationInfo, final Span span) {
+        return getSupportedGatewaysForDevice(tenantId, deviceId, registrationInfo, span)
+                .compose(via -> {
+                    final JsonObject result = new JsonObject()
+                            .put(RegistrationConstants.FIELD_PAYLOAD_DEVICE_ID, deviceId);
+                    if (!via.isEmpty()) {
+                        result.put(RegistrationConstants.FIELD_VIA, via);
+                    }
+                    final JsonObject defaults = registrationInfo.getJsonObject(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS);
+                    if (defaults != null) {
+                        result.put(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS, defaults);
+                    }
+                    return Future.succeededFuture(result);
+                });
+    }
+
+    /**
+     * Checks if a given device allows a gateway to possibly act on behalf of the given device. This is determined by checking whether the
+     * {@link RegistrationConstants#FIELD_VIA} property or the {@link RegistrationConstants#FIELD_VIA_GROUPS} property
+     * of the registration data of the given device have one or more entries.
      * <p>
      * Subclasses may override this method to provide a different means to determine gateway support.
      *
@@ -333,8 +358,12 @@ public abstract class AbstractRegistrationService implements RegistrationService
     protected boolean isGatewaySupportedForDevice(final String tenantId, final String deviceId,
             final JsonObject registrationInfo) {
         final Object viaObj = registrationInfo.getValue(RegistrationConstants.FIELD_VIA);
+        final Object viaGroups = registrationInfo.getValue(RegistrationConstants.FIELD_VIA_GROUPS);
+
         return (viaObj instanceof String && !((String) viaObj).isEmpty())
-                || (viaObj instanceof JsonArray && !((JsonArray) viaObj).isEmpty());
+                || (viaObj instanceof JsonArray && !((JsonArray) viaObj).isEmpty())
+                || (viaGroups instanceof String && !((String) viaGroups).isEmpty())
+                || (viaGroups instanceof JsonArray && !((JsonArray) viaGroups).isEmpty());
     }
 
     private boolean isDeviceEnabled(final RegistrationResult registrationResult) {
@@ -364,29 +393,35 @@ public abstract class AbstractRegistrationService implements RegistrationService
     /**
      * Gets the list of gateways that may act on behalf of the given device.
      * <p>
-     * This default implementation gets the list of gateways from the value of the
-     * {@link RegistrationConstants#FIELD_VIA} property in the device's registration information.
+     * To compile this list of gateways, this default implementation gets the list of gateways from the value of the
+     * {@link RegistrationConstants#FIELD_VIA} property in the device's registration information and resolves
+     * the members of the groups that are in the {@link RegistrationConstants#FIELD_VIA_GROUPS} property of the device.
      * <p>
      * Subclasses may override this method to provide a different means to determine the supported gateways.
+     *
      *
      * @param tenantId The tenant id.
      * @param deviceId The device id.
      * @param registrationInfo The device's registration information.
-     * @return The list of gateways as a JSON array of Strings (never {@code null}).
+     * @param span The active OpenTracing span for this operation. It is not to be closed in this method! An
+     *            implementation should log (error) events on this span and it may set tags and use this span as the
+     *            parent for any spans created in this method.
+     * @return A Future to the list of gateways as a JSON array of Strings (never {@code null}). Depending on the implementation this may fail.
      */
-    protected JsonArray getSupportedGatewaysForDevice(final String tenantId, final String deviceId,
-            final JsonObject registrationInfo) {
-        Object viaObj = registrationInfo.getValue(RegistrationConstants.FIELD_VIA);
-        if (viaObj instanceof String) {
-            viaObj = new JsonArray().add(viaObj);
-        }
+    protected Future<JsonArray> getSupportedGatewaysForDevice(final String tenantId, final String deviceId,
+            final JsonObject registrationInfo, final Span span) {
+        final JsonArray via = convertObjectToJsonArray(registrationInfo.getValue(RegistrationConstants.FIELD_VIA));
+        final JsonArray viaGroups = convertObjectToJsonArray(registrationInfo.getValue(RegistrationConstants.FIELD_VIA_GROUPS));
 
-        if (viaObj instanceof JsonArray) {
-            final Promise<JsonArray> resolveGroupMembersTracker = Promise.promise();
-            resolveGroupMembers(tenantId, (JsonArray) viaObj, NoopSpan.INSTANCE, resolveGroupMembersTracker);
-            return resolveGroupMembersTracker.future().result();
-        }
-        return new JsonArray(Collections.emptyList());
+        final Promise<JsonArray> resolveGroupMembersTracker = Promise.promise();
+        resolveGroupMembers(tenantId, viaGroups, span, resolveGroupMembersTracker);
+        return resolveGroupMembersTracker.future().compose(groupMembers -> {
+            for (Object gateway : groupMembers) {
+                if (!via.contains(gateway)) {
+                    via.add(gateway);
+                }
+            }
+            return Future.succeededFuture(via);
+        });
     }
-
 }

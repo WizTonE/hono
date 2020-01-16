@@ -46,10 +46,10 @@ public class DummyRegistrationService extends AbstractRegistrationService {
     public void assertRegistration(final String tenantId, final String deviceId, final String gatewayId,
             final Span span, final Handler<AsyncResult<RegistrationResult>> resultHandler) {
        final JsonObject deviceData = new JsonObject();
-
-        resultHandler.handle(Future.succeededFuture(RegistrationResult.from(
+        getAssertionPayload(tenantId, deviceId, deviceData)
+                .compose(payload -> Future.succeededFuture(RegistrationResult.from(
                 HttpURLConnection.HTTP_OK,
-                getAssertionPayload(tenantId, deviceId, deviceData))));
+                payload))).setHandler(resultHandler);
     }
 
     @Override
@@ -59,7 +59,7 @@ public class DummyRegistrationService extends AbstractRegistrationService {
     }
 
     @Override
-    protected void resolveGroupMembers(final String tenantId, final JsonArray via, final Span span,
+    protected void resolveGroupMembers(final String tenantId, final JsonArray viaGroups, final Span span,
                                        final Handler<AsyncResult<JsonArray>> resultHandler) {
         resultHandler.handle(Future.failedFuture("Not implemented"));
 

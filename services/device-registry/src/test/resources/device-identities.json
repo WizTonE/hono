@@ -46,7 +46,8 @@
             "this device connects only via the gateway indicated by the 'via' property",
             "therefore, no credentials are registered for the device"
           ],
-          "via": ["gw-1", "group-1"]
+          "via": ["gw-1"],
+          "viaGroups": ["group-1"]
         }
       },
       {
@@ -57,7 +58,7 @@
             "this device connects only via the gateway indicated by the 'via' property",
             "therefore, no credentials are registered for the device"
           ],
-          "via": "group-2"
+          "viaGroups": "group-2"
         }
       },
       {
